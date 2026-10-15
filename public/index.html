@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#F6FAFF">
+  <title>Nova</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='7' fill='%233C8CEB'/%3E%3Cpath d='M12 3.5l1.9 6.6 6.6 1.9-6.6 1.9L12 20.5l-1.9-6.6L3.5 12l6.6-1.9z' fill='white'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main id="app">
+
+  <!-- ============ LOBBY ============ -->
+  <section id="lobby" class="lobby">
+    <button id="lobby-settings" class="gear" type="button" data-tip="Settings" data-icon="settings" data-size="20" aria-label="Settings"></button>
+    <div class="preview">
+      <video id="lobby-video" autoplay playsinline muted></video>
+      <div id="lobby-avatar" class="tile-avatar"></div>
+      <div id="lobby-note" class="preview-note"></div>
+      <div class="preview-controls">
+        <button id="lobby-mic" class="ctl" type="button"></button>
+        <button id="lobby-cam" class="ctl" type="button"></button>
+      </div>
+    </div>
+
+    <div class="join-card">
+      <div class="brand"><span class="logo" data-logo></span><span class="brand-name">Nova</span></div>
+      <h1>Start or join a meeting</h1>
+      <p class="sub">Your name and photo are shown to everyone in the room.</p>
+
+      <div class="profile">
+        <label class="pfp" title="Change photo">
+          <span id="pfp-preview"></span>
+          <input id="pfp-input" type="file" accept="image/*" hidden>
+          <span class="pfp-edit" data-icon="camera" data-size="14"></span>
+        </label>
+        <div class="field">
+          <label for="name-input">Your name</label>
+          <input id="name-input" maxlength="40" autocomplete="name" placeholder="Sara Alharbi">
+        </div>
+      </div>
+
+      <button id="new-meeting" class="btn primary lg" type="button"><span data-icon="video"></span>New meeting</button>
+
+      <div class="or"><span>or join with a code</span></div>
+
+      <form id="join-form" class="join-row">
+        <input id="code-input" placeholder="abc-defg-hij" autocomplete="off" spellcheck="false" aria-label="Meeting code">
+        <button class="btn" type="submit">Join</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- ============ WAITING ROOM ============ -->
+  <section id="waiting" class="waiting" hidden>
+    <div class="wait-card">
+      <span class="logo big" data-logo></span>
+      <h2>Waiting for the host</h2>
+      <p>You'll join as soon as someone lets you in.</p>
+      <button id="wait-cancel" class="btn" type="button">Cancel</button>
+    </div>
+  </section>
+
+  <!-- ============ ROOM ============ -->
+  <section id="room" class="room" hidden>
+    <header class="topbar">
+      <div class="brand sm"><span class="logo" data-logo></span><span class="brand-name">Nova</span></div>
+      <button id="code-chip" class="chip clickable" type="button" data-tip="Copy invite link">
+        <span id="code-text"></span><span data-icon="copy" data-size="14"></span>
+      </button>
+      <span id="lock-ind" class="chip warn" hidden><span data-icon="lock" data-size="14"></span>Locked</span>
+      <span class="spacer"></span>
+      <span class="chip"><span data-icon="users" data-size="16"></span><b id="count">1</b><span class="hide-sm">in meeting</span></span>
+      <span class="chip" id="timer">0:00</span>
+      <button id="btn-settings" class="chip gearbtn" type="button" data-tip="Settings" data-icon="settings" data-size="17" aria-label="Settings"></button>
+    </header>
+
+    <div class="main">
+      <div id="stage" class="stage">
+        <div id="featured" class="featured"></div>
+        <div id="grid" class="grid"></div>
+      </div>
+
+      <aside id="panel" class="panel" hidden>
+        <header class="panel-h">
+          <h2 id="panel-title"></h2>
+          <button id="panel-close" class="icon-btn" type="button" data-icon="x" aria-label="Close panel"></button>
+        </header>
+        <div id="panel-body" class="panel-body"></div>
+      </aside>
+    </div>
+
+    <footer class="dock-wrap">
+      <div class="dock">
+        <button id="btn-mic" class="ctl" type="button"></button>
+        <button id="btn-cam" class="ctl" type="button"></button>
+        <button id="btn-share" class="ctl" type="button"></button>
+        <button id="btn-react" class="ctl" type="button"></button>
+        <button id="btn-hand" class="ctl" type="button"></button>
+        <button id="btn-status" class="ctl" type="button" data-tip="Set your status"><span id="status-ico"></span><i id="status-dot" class="status-dot"></i></button>
+        <span class="dock-sep"></span>
+        <button id="btn-chat" class="ctl" type="button" data-tip="Chat"><span data-icon="message"></span><span id="chat-badge" class="badge-n" hidden></span></button>
+        <button id="btn-people" class="ctl" type="button" data-tip="People"><span data-icon="users"></span><span id="people-badge" class="badge-n"></span></button>
+        <button id="btn-host" class="ctl" type="button" data-tip="Host tools" hidden><span data-icon="shield"></span><span id="host-badge" class="badge-n" hidden></span></button>
+        <span class="dock-sep"></span>
+        <button id="btn-leave" class="ctl leave" type="button" data-tip="Leave"></button>
+      </div>
+    </footer>
+  </section>
+</main>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<div id="overlay-root"></div>
+
+<script src="/config.js"></script>
+<script src="/prefs.js"></script>
+<script src="/app.js"></script>
+<script src="/settings.js"></script>
+</body>
+</html>

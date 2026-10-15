@@ -1,0 +1,7 @@
+{
+  "framework": null,
+  "outputDirectory": "public",
+  "rewrites": [
+    { "source": "/:code([a-z]{3}-[a-z]{4}-[a-z]{3})", "destination": "/index.html" }
+  ]
+}
