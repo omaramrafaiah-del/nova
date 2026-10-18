@@ -24,6 +24,7 @@ io.attach(server); // the HTTPS server is attached too, so both share the same r
 
 const PUBLIC = path.join(__dirname, 'public');
 app.get('/health', (_req, res) => res.send('ok'));
+app.get('/api/info', (_req, res) => { res.set('Access-Control-Allow-Origin', '*'); res.json({ verify: VERIFY_ON }); });
 app.use(express.static(PUBLIC));
 // Meeting links look like /abc-defg-hij — serve the app for them.
 app.get('/:code([a-z]{3}-[a-z]{4}-[a-z]{3})', (_req, res) =>
@@ -31,6 +32,32 @@ app.get('/:code([a-z]{3}-[a-z]{4}-[a-z]{3})', (_req, res) =>
 );
 
 /* ------------------------------ helpers ------------------------------ */
+
+// Account checking. Uses the same Supabase URL + anon key the page already has in public/config.js
+// (or SUPABASE_URL / SUPABASE_ANON_KEY environment variables, if you prefer).
+function readClientConfig() {
+  try {
+    const t = fs.readFileSync(path.join(PUBLIC, 'config.js'), 'utf8');
+    const get = (k) => { const m = t.match(new RegExp(k + "\\s*=\\s*'([^']*)'")); return m ? m[1] : ''; };
+    return { url: get('NOVA_SUPABASE_URL'), key: get('NOVA_SUPABASE_KEY') };
+  } catch { return { url: '', key: '' }; }
+}
+const clientCfg = readClientConfig();
+const SB_URL = (process.env.SUPABASE_URL || clientCfg.url || '').replace(/\/$/, '');
+const SB_KEY = process.env.SUPABASE_ANON_KEY || clientCfg.key || '';
+const VERIFY_ON = !!(SB_URL && SB_KEY);
+
+async function verifyToken(token) {
+  if (!VERIFY_ON || typeof token !== 'string' || token.length > 4000) return null;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 5000);
+  try {
+    const r = await fetch(`${SB_URL}/auth/v1/user`, { headers: { apikey: SB_KEY, Authorization: `Bearer ${token}` }, signal: ctl.signal });
+    if (!r.ok) return null;
+    const u = await r.json();
+    return u && u.id ? { uid: u.id, email: u.email || '' } : null;
+  } catch { return null; } finally { clearTimeout(timer); }
+}
 const rooms = new Map();
 const STATUSES = ['available', 'busy', 'away', 'brb'];
 const AVATAR_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
@@ -44,7 +71,7 @@ const isMod = (u) => !!u && (u.role === 'host' || u.role === 'cohost');
 const pub = (u) => ({
   id: u.id, name: u.name, avatar: u.avatar, role: u.role,
   muted: u.muted, camOn: u.camOn, sharing: u.sharing,
-  hand: u.hand, handAt: u.handAt, status: u.status,
+  hand: u.hand, handAt: u.handAt, status: u.status, verified: !!u.verified,
 });
 
 function newRoom(code) {
@@ -56,6 +83,7 @@ function newRoom(code) {
     history: [],          // last 100 "everyone" messages
     settings: {
       locked: false,
+      accountsOnly: false, // only signed-in (verified) people may join
       waiting: false,     // waiting room
       chat: true,         // participants can use everyone-chat
       dm: true,           // participants can use private + group chat
@@ -66,7 +94,7 @@ function newRoom(code) {
 }
 
 function pushWaiting(room) {
-  const list = [...room.waiting.values()].map((u) => ({ id: u.id, name: u.name, avatar: u.avatar }));
+  const list = [...room.waiting.values()].map((u) => ({ id: u.id, name: u.name, avatar: u.avatar, verified: !!u.verified }));
   for (const u of room.users.values()) if (isMod(u)) io.to(u.id).emit('waiting-list', list);
 }
 
@@ -134,13 +162,22 @@ io.on('connection', (socket) => {
   };
   const deny = (message) => socket.emit('denied', { message });
 
-  socket.on('join', (p, ack = () => {}) => {
-    const code = String((p && p.code) || '').toLowerCase();
+  socket.on('join', async (p, ack = () => {}) => {
+    p = p || {};
+    const code = String(p.code || '').toLowerCase();
     if (!validCode(code)) return ack({ error: 'invalid' });
-    if (socket.data.code || socket.data.pending) return ack({ error: 'busy' });
+    if (socket.data.code || socket.data.pending || socket.data.joining) return ack({ error: 'busy' });
+
+    // Check the sign-in token with Supabase (if the person is logged in and checking is on)
+    socket.data.joining = true;
+    const acct = p.token ? await verifyToken(p.token) : null;
+    socket.data.joining = false;
+    if (!socket.connected) return;
 
     const user = {
       id: socket.id,
+      uid: acct ? acct.uid : null,
+      verified: !!acct,
       name: cleanName(p.name) || 'Guest',
       avatar: typeof p.avatar === 'string' && p.avatar.length < 400000 && AVATAR_RE.test(p.avatar) ? p.avatar : null,
       role: 'participant',
@@ -153,20 +190,42 @@ io.on('connection', (socket) => {
     };
 
     let room = rooms.get(code);
+    let isOwner = false;
     if (!room) {
       room = newRoom(code);
+      room.ownerUid = acct ? acct.uid : null; // the signed-in person who starts a room owns it
       rooms.set(code, room);
       user.role = 'host';
-    } else if (room.settings.locked) {
-      return ack({ error: 'locked' });
-    } else if (room.settings.waiting) {
-      room.waiting.set(socket.id, user);
-      socket.data.pending = code;
-      pushWaiting(room);
-      return ack({ waiting: true });
+    } else {
+      isOwner = !!(acct && room.ownerUid && room.ownerUid === acct.uid);
+      if (!isOwner) {
+        if (room.settings.accountsOnly && !acct) return ack({ error: 'accounts-only' });
+        if (room.settings.locked) return ack({ error: 'locked' });
+        if (room.settings.waiting) {
+          room.waiting.set(socket.id, user);
+          socket.data.pending = code;
+          pushWaiting(room);
+          return ack({ waiting: true });
+        }
+      }
     }
+
+    // The room owner always gets the host role back when they rejoin
+    let demoted = null;
+    if (isOwner && room.users.size) {
+      const h = [...room.users.values()].find((u) => u.role === 'host');
+      if (h && h.uid && h.uid === user.uid) user.role = 'cohost';
+      else { user.role = 'host'; if (h) { h.role = 'cohost'; demoted = h; } }
+    }
+
     enter(socket, room, user);
     ack({ ok: true });
+
+    if (demoted) {
+      io.to(code).emit('participant-updated', { id: demoted.id, patch: { role: 'cohost' } });
+      io.to(code).emit('notice', { message: `${user.name} (room owner) is now the host` });
+    }
+    if (p.token && !acct && VERIFY_ON) socket.emit('notice', { message: 'Could not verify your account, so you joined as a guest. Try logging in again.' });
   });
 
   socket.on('signal', ({ to, data } = {}) => {
@@ -363,7 +422,8 @@ io.on('connection', (socket) => {
     const c = ctx(); if (!c) return;
     const { room, user } = c;
     if (!isMod(user)) return deny('Only the host can change meeting settings.');
-    const bool = ['locked', 'waiting', 'chat', 'dm', 'selfUnmute'];
+    const bool = ['locked', 'waiting', 'chat', 'dm', 'selfUnmute', 'accountsOnly'];
+    if (key === 'accountsOnly' && value && !VERIFY_ON) return deny('Account checking is off on this server. Add your Supabase keys to public/config.js first.');
     if (bool.includes(key)) room.settings[key] = !!value;
     else if (key === 'share' && (value === 'all' || value === 'host')) room.settings.share = value;
     else return;

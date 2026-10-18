@@ -117,6 +117,7 @@ function startMeter() {
 /* ---------------- UI builders ---------------- */
 const TABS = [
   { id: 'profile', label: 'Profile', ico: 'user' },
+  { id: 'account', label: 'Account', ico: 'shield' },
   { id: 'video', label: 'Video', ico: 'video' },
   { id: 'audio', label: 'Audio', ico: 'mic' },
   { id: 'sounds', label: 'Sounds', ico: 'volume' },
@@ -155,6 +156,28 @@ function tabHTML(id) {
         <div class="srow col"><label for="set-name"><b>Display name</b></label>
           <input type="text" id="set-name" class="txt-in" maxlength="40" value="${esc(nameInput.value)}" placeholder="Your name"></div>
         <p class="hint">${joined() ? 'Changes appear to everyone in the meeting right away.' : 'Shown to everyone when you join.'}</p>`;
+    }
+    case 'account': {
+      const A = window.novaAuth;
+      if (!A || !A.user) {
+        return `<div class="guest-card"><b>You're using Nova as a guest</b>
+          <p>Log in to sync your name and photo across devices, keep a meeting history, and get a verified badge.</p>
+          <button class="btn primary sm" type="button" data-act="go-login">Log in or sign up</button></div>`;
+      }
+      const sync = A.dbReady === true ? 'Name and photo sync across your devices'
+        : A.dbReady === false ? 'Not set up yet. Run supabase/setup.sql in your Supabase project' : 'Syncing…';
+      return `
+        ${row('Signed in as', esc(A.email || 'your account'), '<span class="tag">Verified</span>')}
+        ${row('Profile sync', sync, '')}
+        ${row('Server check', '<span id="srv-check">Checking…</span>', '')}
+        <div class="srow col"><label for="set-pw"><b>Change password</b></label>
+          <div class="pw-row"><input type="password" id="set-pw" class="txt-in" placeholder="New password (6+ characters)" autocomplete="new-password">
+          <button class="btn sm" type="button" data-act="save-pw">Save</button></div></div>
+        <h4 class="sub-h">Meeting history</h4>
+        <div id="hist-list" class="hist-list"><p class="hint">Loading…</p></div>
+        <div class="srow"><div class="txt"><b>Clear history</b><span>Removes the list above</span></div><button class="btn sm" type="button" data-act="clear-hist">Clear</button></div>
+        <div class="srow"><div class="txt"><b>Sign out</b><span>${joined() ? 'Leave the meeting first' : 'Return to the sign-in page'}</span></div>
+          <button class="btn sm" type="button" data-act="signout" ${joined() ? 'disabled' : ''}>Sign out</button></div>`;
     }
     case 'video':
       return `
@@ -225,6 +248,28 @@ function renderTab() {
   $$('.snav button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   if (tab === 'video') { const pv = $('#set-preview'); if (pv) pv.srcObject = state.previewStream; }
   if (tab === 'audio') startMeter(); else stopMeter();
+  if (tab === 'account') fillAccount();
+}
+
+const fmtDur = (s) => (s < 60 ? `${s || 0}s` : s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`);
+async function fillAccount() {
+  const A = window.novaAuth;
+  if (!A || !A.user) return;
+  A.serverVerifies().then((v) => {
+    const el = $('#srv-check');
+    if (el) el.textContent = v === null ? 'Could not reach the server' : v ? 'On: signed-in people get a verified badge' : 'Off: add your Supabase keys to public/config.js and redeploy the server';
+  });
+  const rows = await A.fetchHistory();
+  const list = $('#hist-list');
+  if (!list) return; // tab changed or window closed
+  if (rows === null) { list.innerHTML = '<p class="hint">History is not set up yet. Run supabase/setup.sql in your Supabase project.</p>'; return; }
+  if (!rows.length) { list.innerHTML = '<p class="hint">No meetings yet. They appear here after you join one while signed in.</p>'; return; }
+  list.innerHTML = rows.map((r) => `
+    <div class="hist"><div class="hist-main"><b>${esc(r.code)}</b>
+      <span>${new Date(r.started_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${fmtDur(r.duration_s)} · ${r.max_people} ${r.max_people === 1 ? 'person' : 'people'}</span></div>
+      ${r.role === 'host' ? '<span class="tag host">Host</span>' : ''}
+      ${joined() ? '' : `<button class="btn sm" type="button" data-rejoin="${esc(r.code)}">Rejoin</button>`}
+    </div>`).join('');
 }
 
 function openSettings(startTab) {
@@ -257,9 +302,10 @@ function setName(v) {
   try { localStorage.setItem('nova.name', v); } catch { /* ignore */ }
   renderLobby();
   if (joined() && v.trim()) socket.emit('profile', { name: v.trim() });
+  if (window.novaAuth) window.novaAuth.saveName(v.trim());
 }
 
-function onClick(e) {
+async function onClick(e) {
   if (e.target.closest('[data-close]')) return closeModal();
 
   const t = e.target.closest('[data-tab]');
@@ -298,14 +344,36 @@ function onClick(e) {
   const p = e.target.closest('[data-preview]');
   if (p) return sfx.play(p.dataset.preview, true);
 
+  const rj = e.target.closest('[data-rejoin]');
+  if (rj) { const c = rj.dataset.rejoin; closeModal(); startJoin(c); return; }
+
   const act = e.target.closest('[data-act]');
   if (!act) return;
   if (act.dataset.act === 'remove-pfp') {
     state.avatar = null;
     try { localStorage.removeItem('nova.avatar'); } catch { /* ignore */ }
     renderLobby();
+    if (window.novaAuth) window.novaAuth.saveProfile();
     if (joined()) socket.emit('profile', { avatar: null });
     renderTab();
+  }
+  const A = window.novaAuth;
+  if (act.dataset.act === 'go-login') {
+    if (joined()) return toast('Leave the meeting first');
+    closeModal();
+    if (A) A.toAuth();
+  }
+  if (act.dataset.act === 'signout' && A) { await A.signOut(); closeModal(); }
+  if (act.dataset.act === 'clear-hist' && A) {
+    toast((await A.clearHistory()) ? 'History cleared' : 'Could not clear history', 2500, 'info');
+    fillAccount();
+  }
+  if (act.dataset.act === 'save-pw' && A) {
+    const v = $('#set-pw').value;
+    if (v.length < 6) return toast('Password must be at least 6 characters');
+    const err = await A.changePassword(v);
+    toast(err || 'Password updated', 3000);
+    if (!err) $('#set-pw').value = '';
   }
   if (act.dataset.act === 'reset') {
     Object.assign(S, DEFAULTS);
@@ -343,6 +411,7 @@ async function onChange(e) {
       state.avatar = await fileToAvatar(f);
       try { localStorage.setItem('nova.avatar', state.avatar); } catch { /* ignore */ }
       renderLobby();
+      if (window.novaAuth) window.novaAuth.saveProfile();
       if (joined()) socket.emit('profile', { avatar: state.avatar });
       renderTab();
     } catch { toast('That image could not be used'); }

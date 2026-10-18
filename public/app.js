@@ -288,10 +288,14 @@ const urlCode = location.pathname.match(CODE_RE);
 if (urlCode) $('#code-input').value = urlCode[1].toLowerCase();
 
 function showView(v) {
-  for (const id of ['lobby', 'waiting', 'room']) $('#' + id).hidden = id !== v;
+  for (const id of ['auth', 'lobby', 'waiting', 'room']) $('#' + id).hidden = id !== v;
   const el = $('#' + v);
   el.classList.remove('view-in'); void el.offsetWidth; el.classList.add('view-in');
+  if (v === 'lobby') startMedia();
 }
+// Ask for camera/mic only once the lobby is showing, not on the sign-in page.
+let mediaStarted = false;
+function startMedia() { if (mediaStarted) return; mediaStarted = true; initMedia(); }
 
 function setCtl(btn, name, tip, cls = '') {
   const key = name + '|' + cls, changed = btn.dataset.key && btn.dataset.key !== key;
@@ -334,6 +338,7 @@ $('#pfp-input').addEventListener('change', async (e) => {
   try {
     state.avatar = await fileToAvatar(f);
     localStorage.setItem('nova.avatar', state.avatar);
+    if (window.novaAuth) window.novaAuth.saveProfile();
     renderLobby();
   } catch { toast('That image could not be used'); }
 });
@@ -354,7 +359,7 @@ function fileToAvatar(file) {
   });
 }
 
-function startJoin(code) {
+async function startJoin(code) {
   const name = nameInput.value.trim();
   if (!name) {
     nameInput.focus();
@@ -365,8 +370,10 @@ function startJoin(code) {
   state.name = name;
   if (!socket.connected) return toast('Still connecting to the server. Try again in a few seconds.');
   getCtx().resume();
-  socket.emit('join', { code, name, avatar: state.avatar, muted: !state.micOn, camOn: state.camOn && !!state.camTrack }, (res) => {
+  const token = window.novaAuth ? await window.novaAuth.freshToken() : null;
+  socket.emit('join', { code, name, token, avatar: state.avatar, muted: !state.micOn, camOn: state.camOn && !!state.camTrack }, (res) => {
     if (res.error === 'locked') return toast('This meeting is locked by the host');
+    if (res.error === 'accounts-only') return toast('This meeting only allows signed-in people. Log in and try again.');
     if (res.error) return toast('Could not join that meeting');
     state.code = code;
     if (res.waiting) showView('waiting');
@@ -399,6 +406,7 @@ socket.on('joined', (d) => {
 
   showView('room');
   sfx.play('welcome');
+  if (window.novaAuth) window.novaAuth.meetingStarted(d.code, d.me.role);
   history.replaceState(null, '', '/' + d.code);
   $('#code-text').textContent = d.code;
   if (state.micTrack) watchAudio(state.myId, new MediaStream([state.micTrack]));
@@ -572,13 +580,13 @@ function makeTile(id) {
       <button type="button" data-act="pin" aria-label="Pin"></button>
       <button type="button" data-act="menu" aria-label="More options">${icon('more', 18)}</button>
     </div>
-    <div class="tile-label"><span class="mic"></span><span class="crown"></span><span class="dot"></span><span class="nm"></span><span class="st"></span></div>
+    <div class="tile-label"><span class="mic"></span><span class="crown"></span><span class="dot"></span><span class="nm"></span><span class="vf"></span><span class="st"></span></div>
     <div class="tile-fx"></div>`;
   const t = {
     el, key: '',
     video: $('video', el), avatar: $('.tile-avatar', el), hand: $('.pill.hand', el), pin: $('.pill.pin', el),
     pinBtn: $('[data-act=pin]', el), mic: $('.mic', el), crown: $('.crown', el), dot: $('.dot', el),
-    nm: $('.nm', el), st: $('.st', el), fx: $('.tile-fx', el),
+    nm: $('.nm', el), vf: $('.vf', el), st: $('.st', el), fx: $('.tile-fx', el),
   };
   t.video.muted = true; // sound comes from a separate <audio> element per person
   if (id !== state.myId && state.streams.has(id)) t.video.srcObject = state.streams.get(id);
@@ -616,6 +624,8 @@ function updateTile(id) {
   t.mic.innerHTML = u.muted ? icon('mic-off', 15) : '';
   t.crown.innerHTML = u.role === 'host' ? icon('crown', 14) : '';
   t.crown.title = u.role === 'host' ? 'Host' : '';
+  t.vf.innerHTML = u.verified ? icon('badge-check', 15) : '';
+  t.vf.title = u.verified ? 'Signed-in account' : '';
   t.dot.className = 'dot ' + st.cls;
   t.st.textContent = st.text === 'Available' ? '' : st.text;
 
@@ -875,7 +885,7 @@ function renderPeople(animate = false) {
     const st = statusOf(u), isMe = u.id === state.myId;
     html += `<div class="row${animate ? ' enter' : ''}" style="--i:${i}" data-id="${u.id}">${avatar(u)}
       <div class="row-main">
-        <div class="row-name"><span class="t">${esc(u.name)}</span>${isMe ? '<span class="tag">You</span>' : ''}${u.role === 'host' ? '<span class="tag host">Host</span>' : u.role === 'cohost' ? '<span class="tag">Co-host</span>' : ''}</div>
+        <div class="row-name"><span class="t">${esc(u.name)}</span>${u.verified ? `<span class="vf" title="Signed-in account">${icon('badge-check', 15)}</span>` : ''}${isMe ? '<span class="tag">You</span>' : ''}${u.role === 'host' ? '<span class="tag host">Host</span>' : u.role === 'cohost' ? '<span class="tag">Co-host</span>' : ''}</div>
         <div class="row-status"><i class="dot ${st.cls}"></i>${st.text}</div>
       </div>
       <div class="row-icons">
@@ -1099,6 +1109,7 @@ function renderHost() {
     <div class="sec">
       ${sw('locked', 'Lock meeting', 'No one new can join while locked', s.locked)}
       ${sw('waiting', 'Waiting room', 'Let people in one at a time', s.waiting)}
+      ${sw('accountsOnly', 'Signed-in people only', 'Guests cannot join this meeting', s.accountsOnly)}
       ${sw('chat', 'Everyone chat', 'Participants can post to the main chat', s.chat)}
       ${sw('dm', 'Private and group chat', 'Participants can message each other', s.dm)}
       ${sw('selfUnmute', 'Unmute themselves', 'Participants can turn their own mic on', s.selfUnmute)}
@@ -1178,4 +1189,5 @@ window.addEventListener('resize', closeMenu);
 
 /* ---------------- boot ---------------- */
 renderLobby();
-initMedia();
+// Safety net: if the sign-in script ever fails to load, fall back to the lobby.
+setTimeout(() => { if ($$('#app > section').every((s) => s.hidden)) showView('lobby'); }, 2500);
